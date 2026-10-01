@@ -98,6 +98,11 @@
 #define EG_CUT_OCT      5.0f
 #define FM_MAX          3.0f
 #define NOISE_FLOOR     1.12e-4f   /* ~ -79 dB */
+#ifdef MAZE_VST   /* MPC host: the voice peaks near -3 dBFS at the default Out Level, far hotter than the other plugins */
+#define VST_OUT_TRIM    0.35f      /* -9 dB */
+#else
+#define VST_OUT_TRIM    1.0f
+#endif
 #define MIX_HEADROOM    1.5f       /* per-channel warm-sat headroom */
 #define MIX_ASYM        0.15f      /* per-channel asymmetry (even harmonics) */
 #define BOSS_BIAS       0.28f      /* Boss-style asymmetric clip bias */
@@ -965,7 +970,7 @@ static void render_block(void* instance, int16_t* out_lr, int frames){
 #else
         s = voice_tick(v, &c, foldGain);
 #endif
-        int q = (int)lrintf(clampf(s, -1.0f, 1.0f) * 32767.0f);
+        int q = (int)lrintf(clampf(s * VST_OUT_TRIM, -1.0f, 1.0f) * 32767.0f);
         if (q >  32767) q =  32767;
         if (q < -32768) q = -32768;
         out_lr[2*i]   = (int16_t)q;
