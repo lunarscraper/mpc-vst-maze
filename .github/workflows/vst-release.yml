@@ -17,14 +17,16 @@ on:
 
 jobs:
   maze-voice:
-    uses: sd88me/mpc-vst-plugins/.github/workflows/vst-release.yml@9e56aa2a70f6731afe6800809da5a38ddc62630d
+    uses: sd88me/mpc-vst-plugins/.github/workflows/vst-release.yml@73397e0a09f4d9b8d6513cbd446e3a2da203680f
     permissions:
       contents: write
     with:
       tag: maze-voice-vst-v${{ inputs.version }}
       version: ${{ inputs.version }}
-      tools_ref: 9e56aa2a70f6731afe6800809da5a38ddc62630d
+      tools_ref: 73397e0a09f4d9b8d6513cbd446e3a2da203680f
       vst_dir: vst
+      plugin_id: maze-voice
+      license: MIT
       build: vst/build.sh
       host_test: '"$MPC_VST/tools/test_port.sh" vst/vst.json'
       about: Monophonic Moog Labyrinth-style thru-zero oscillator / wavefolder / state-variable filter voice, with two LFOs and a page randomiser.

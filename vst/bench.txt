@@ -1,0 +1,11 @@
+plugin /tmp/maze_voice.so: instrument, 65 params, open 0.0 ms; block 128 @ 44100 Hz = 2902 us budget
+stage               mean%     p99%     max%  threads%    peak
+idle                  6.9      7.6      8.1       0.0    0.00
+1 voices              7.1      7.9      8.2       0.0    0.17
+4 voices              7.2      7.9      8.4       0.0    0.21
+8 voices              7.1      7.9      8.3       0.0    0.21
+16 voices             7.2      7.9      8.3       0.0    0.21
+q-link sweep          7.5     10.0     10.8       0.0    0.55
+release tail          5.6      6.3      7.0      -0.0    0.62
+worst p99 10.0%, worst block 10.8%, background threads up to 0.0% of a core -> PASS
+{"plugin":"/tmp/maze_voice.so","instrument":1,"open_ms":0.0,"p99_pct":10.0,"max_pct":10.8,"threads_pct":0.0,"verdict":"PASS"}
