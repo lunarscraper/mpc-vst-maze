@@ -101,6 +101,7 @@ struct Plugin {
     void *inst = nullptr;
     std::mutex lock;               /* serialises every call into the core */
     Outbox out;
+    int run_idx[2] = {-1, -1};     /* param index of s1_run / s2_run */
     float cache[NPARAMS];          /* every parameter's value in its own domain (option index / number) */
     volatile int release[NPARAMS] = {0};
     bool held[NPARAMS] = {false};  /* momentary params: host currently reports them pressed */
@@ -183,15 +184,17 @@ static void core_set(Plugin *w, const char *key, const char *val) {
     t_out = &w->out; g_api->set_param(w->inst, key, val); t_out = nullptr;
     alsa_flush(w);
 }
-static void core_bits(Plugin *w, int seq, int bits[8]) {   /* "<len>|1,0,..|<play>" */
+static int core_bits(Plugin *w, int seq, int bits[8]) {   /* "<len>|1,0,..|<play>": the bits; returns the play-head (-1 before the first step) */
     char buf[96], key[16];
     std::snprintf(key, sizeof key, "s%d_state", seq + 1);
     int n;
     { std::lock_guard<std::mutex> lk(w->lock); n = g_api->get_param(w->inst, key, buf, sizeof buf); }
     for (int i = 0; i < 8; i++) bits[i] = 0;
-    if (n <= 0) return;
+    if (n <= 0) return -1;
     const char *p = std::strchr(buf, '|');
     for (int i = 0; p && i < 8; i++) { p++; bits[i] = *p == '1'; p = std::strchr(p, ','); if (!p) break; }
+    const char *q = std::strrchr(buf, '|');
+    return q && q != std::strchr(buf, '|') ? std::atoi(q + 1) : -1;
 }
 
 /* a parameter's step bit lives in the core: s1_step3 -> (0, 3) */
@@ -209,6 +212,7 @@ static float from_norm(const param_t *p, float n) {
     if (p->nopts) return (float)std::lround(clamp01(n) * (p->nopts - 1));
     return (float)std::lround(p->min + (p->max - p->min) * clamp01(n));   /* every core parameter is a whole number */
 }
+static bool is_run(const param_t *p) { return !std::strcmp(p->key, "s1_run") || !std::strcmp(p->key, "s2_run"); }
 static float value_of(Plugin *w, int i) {   /* param domain */
     int seq, idx;
     if (is_step(&PARAMS[i], &seq, &idx)) { int b[8]; core_bits(w, seq, b); return (float)b[idx]; }
@@ -220,6 +224,7 @@ static void apply(Plugin *w, int i, float v) {
     const param_t *p = &PARAMS[i];
     char buf[32];
     int seq, idx;
+    if (is_run(p)) return;   /* display only */
     if (is_step(p, &seq, &idx)) {
         int b[8];
         core_bits(w, seq, b);
@@ -266,6 +271,16 @@ static void processReplacing(AEffect *e, float **in, float **out, int32_t n) {
     (void)in;
     Plugin *w = (Plugin *)e->object;
     feed_transport(w);
+    for (int n2 = 0; n2 < 2; n2++) {   /* running light: tell the host when the play-head moves (jv880's highlight mechanism) */
+        int ri = w->run_idx[n2], b[8];
+        if (ri < 0) continue;
+        float v = 0.0f;
+        if (w->was_playing) { int pl = core_bits(w, n2, b); v = pl >= 0 && pl < 8 ? (float)(pl + 1) : 0.0f; }
+        if (v != w->cache[ri]) {
+            w->cache[ri] = v;
+            w->master(&w->fx, audioMasterAutomate, ri, 0, 0, to_norm(&PARAMS[ri], v));
+        }
+    }
     for (int i = 0; i < NPARAMS; i++)
         if (w->release[i]) { w->release[i] = 0; w->held[i] = false; w->master(&w->fx, audioMasterAutomate, i, 0, 0, 0.0f); }
     for (int32_t i = 0; i < n; i++) out[0][i] = out[1][i] = 0.0f;   /* MIDI generator: no audio */
@@ -332,7 +347,7 @@ static intptr_t dispatcher(AEffect *e, int32_t op, int32_t idx, intptr_t v, void
     case effGetVendorString: copy_str(p, PLUG_VENDOR, 32); return 1;
     case effGetVendorVersion: return PLUG_VERSION;
     case effGetVstVersion: return 2400;
-    case effCanBeAutomated: return idx >= 0 && idx < NPARAMS;
+    case effCanBeAutomated: return idx >= 0 && idx < NPARAMS && !is_run(&PARAMS[idx]);
     case effGetParamName:
         if (idx >= 0 && idx < NPARAMS) copy_str(p, PARAMS[idx].name, 32);
         return 1;
@@ -362,7 +377,7 @@ static intptr_t dispatcher(AEffect *e, int32_t op, int32_t idx, intptr_t v, void
         std::string s;
         for (int i = 0; i < NPARAMS; i++) {
             int seq, st;
-            if (PARAMS[i].momentary || popup_is(i) || is_step(&PARAMS[i], &seq, &st)) continue;
+            if (PARAMS[i].momentary || popup_is(i) || is_run(&PARAMS[i]) || is_step(&PARAMS[i], &seq, &st)) continue;
             char b[32];
             std::snprintf(b, sizeof b, "%ld", std::lround(w->cache[i]));
             s += PARAMS[i].key; s += '='; s += b; s += ';';
@@ -409,6 +424,7 @@ extern "C" __attribute__((visibility("default"))) AEffect *VSTPluginMain(audioMa
     w->inst = g_api->create_instance("", nullptr);   /* "" : no state file (MAZE_VST) */
     if (!w->inst) { LOG("[maze_seq_vst] create_instance failed\n"); delete w; return nullptr; }
     reset_defaults(w);
+    for (int i = 0; i < NPARAMS; i++) { if (!std::strcmp(PARAMS[i].key, "s1_run")) w->run_idx[0] = i; if (!std::strcmp(PARAMS[i].key, "s2_run")) w->run_idx[1] = i; }
     alsa_open(w);
 
     AEffect *e = &w->fx;

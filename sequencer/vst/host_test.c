@@ -97,12 +97,26 @@ int main(void) {
     g_ti.tempo = 120.0;
     float L[128], R[128], *out[2] = { L, R };
     double ppq_per_block = (g_ti.tempo / 60.0) * (128.0 / 44100.0);
-    for (int k = 0; k < 1100; k++) { a->pr(a, 0, out, 128); g_ti.ppqPos += ppq_per_block; }
+    int seen[9] = {0}, run = P("s1_run");
+    for (int k = 0; k < 1100; k++) {
+        a->pr(a, 0, out, 128);
+        seen[(int)lroundf(a->getP(a, run) * 8)]++;
+        g_ti.ppqPos += ppq_per_block;
+    }
+    int distinct = 0;
+    for (int i = 1; i <= 8; i++) distinct += seen[i] > 0;
+    CHECK(distinct >= 6, "running light visited %d of 8 steps while playing", distinct);
+    CHECK(automated[run] >= 10, "play-head pushed to the host %d times", automated[run]);
+    CHECK(automated[P("s2_run")] >= 10, "line B play-head pushed too (%d)", automated[P("s2_run")]);
     CHECK(maze_vst_note_ons(2) >= 8, "line A (CH 3) sent %d note-ons", maze_vst_note_ons(2));
     CHECK(maze_vst_note_ons(4) >= 1, "line B (CH 5) sent %d note-ons", maze_vst_note_ons(4));
     CHECK(maze_vst_note_ons(0) == 0 && maze_vst_note_ons(1) == 0, "nothing on the default channel");
     g_ti.flags = kTempo;   /* stop */
     a->pr(a, 0, out, 128);
+    CHECK(a->getP(a, run) == 0.0f, "running light off after stop");
+    a->setP(a, run, 1.0f);
+    CHECK(a->getP(a, run) == 0.0f, "running light is display only (a host set is ignored)");
+    a->d(a, 26, run, 0, 0, 0);
 
     /* popups (wrapper/popup.h): a tap opens it, a Q-Link nudge leaves it open, a pick closes it and tells the host once */
     for (int i = 0; i < NPARAMS; i++) {
@@ -123,7 +137,7 @@ int main(void) {
     char saved[4096];
     strncpy(saved, (char *)chunk, sizeof saved - 1); saved[sizeof saved - 1] = 0;
     printf("     chunk %ld bytes: %.100s...\n", (long)n, saved);
-    CHECK(strstr(saved, "pattern=") && !strstr(saved, "__open") && !strstr(saved, "_step"), "chunk has the pattern, no popup flags, no step keys");
+    CHECK(strstr(saved, "pattern=") && !strstr(saved, "__open") && !strstr(saved, "_step") && !strstr(saved, "_run"), "chunk has the pattern, no popup flags, no step or running-light keys");
     b->d(b, 24, 0, n, saved, 0);
     void *chunk2 = 0;
     intptr_t n2 = b->d(b, 23, 0, 0, &chunk2, 0);
