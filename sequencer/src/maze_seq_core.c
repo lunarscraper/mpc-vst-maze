@@ -509,6 +509,15 @@ static void maze_on_midi(void *inst, const uint8_t *msg, int len, int source){
     /* incoming notes intentionally do NOT set key (UI owns it). */
 }
 
+#ifdef MAZE_VST   /* MPC-VST-ONLY: Advance rotates the pattern (gates + CV of the active steps) one step; works while stopped */
+static void seq_rotate(seq_t *q, int dir){
+    int n=q->length<1?1:(q->length>NUM_STEPS?NUM_STEPS:q->length);
+    if (n<2) return;
+    int b0=q->bit[dir>0?n-1:0]; float c0=q->cv[dir>0?n-1:0];
+    if (dir>0){ for (int i=n-1;i>0;i--){ q->bit[i]=q->bit[i-1]; q->cv[i]=q->cv[i-1]; } q->bit[0]=b0; q->cv[0]=c0; }
+    else      { for (int i=0;i<n-1;i++){ q->bit[i]=q->bit[i+1]; q->cv[i]=q->cv[i+1]; } q->bit[n-1]=b0; q->cv[n-1]=c0; }
+}
+#endif
 static void maze_set_param(void *inst, const char *key, const char *val){
     maze_t *L=(maze_t*)inst;
     if(!L||!key||!val) return;
@@ -518,14 +527,22 @@ static void maze_set_param(void *inst, const char *key, const char *val){
     else if (!strcmp(key,"s1_length"))   L->s[0].length=(v<1?1:(v>8?8:v));
     else if (!strcmp(key,"s1_channel"))  L->s[0].channel=(v<0?0:(v>15?15:v));
     else if (!strcmp(key,"s1_flip")){ int p=(v<0||v>7)?0:v; L->s[0].bit[p]=!L->s[0].bit[p]; if(L->s[0].bit[p])L->s[0].cv[p]=rng_bip(); }
+#ifdef MAZE_VST
+    else if (!strcmp(key,"s1_adv")){ seq_rotate(&L->s[0], v<0?-1:1); }
+#else
     else if (!strcmp(key,"s1_adv")){ int n=L->s[0].length<1?1:L->s[0].length; L->s[0].play=((L->s[0].play+(v<0?-1:1))%n+n)%n; }
+#endif
     else if (!strcmp(key,"s1_len_dec")){ L->s[0].length=(L->s[0].length<=1)?8:L->s[0].length-1; }
     else if (!strcmp(key,"s2_corrupt"))  L->s[1].corrupt=(v<0?0:(v>100?100:v));
     else if (!strcmp(key,"s2_cv_range")) L->s[1].cv_range=(v<0?0:(v>100?100:v));
     else if (!strcmp(key,"s2_length"))   L->s[1].length=(v<1?1:(v>8?8:v));
     else if (!strcmp(key,"s2_channel"))  L->s[1].channel=(v<0?0:(v>15?15:v));
     else if (!strcmp(key,"s2_flip")){ int p=(v<0||v>7)?0:v; L->s[1].bit[p]=!L->s[1].bit[p]; if(L->s[1].bit[p])L->s[1].cv[p]=rng_bip(); }
+#ifdef MAZE_VST
+    else if (!strcmp(key,"s2_adv")){ seq_rotate(&L->s[1], v<0?-1:1); }
+#else
     else if (!strcmp(key,"s2_adv")){ int n=L->s[1].length<1?1:L->s[1].length; L->s[1].play=((L->s[1].play+(v<0?-1:1))%n+n)%n; }
+#endif
     else if (!strcmp(key,"s2_len_dec")){ L->s[1].length=(L->s[1].length<=1)?8:L->s[1].length-1; }
     else if (!strcmp(key,"trig_mix"))    L->trig_mix=(v<-63?-63:(v>64?64:v));
     /* Reset Both: one global reset length (in bars) for both sequencers. */

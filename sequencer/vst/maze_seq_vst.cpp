@@ -102,6 +102,8 @@ struct Plugin {
     std::mutex lock;               /* serialises every call into the core */
     Outbox out;
     int run_idx[2] = {-1, -1};     /* param index of s1_run / s2_run */
+    int step_idx[2][8];            /* param index of s?_step0..7 */
+    int last_bits[2][8];           /* step bits the host was last told (-1: not yet read) */
     float cache[NPARAMS];          /* every parameter's value in its own domain (option index / number) */
     volatile int release[NPARAMS] = {0};
     bool held[NPARAMS] = {false};  /* momentary params: host currently reports them pressed */
@@ -271,11 +273,19 @@ static void processReplacing(AEffect *e, float **in, float **out, int32_t n) {
     (void)in;
     Plugin *w = (Plugin *)e->object;
     feed_transport(w);
-    for (int n2 = 0; n2 < 2; n2++) {   /* running light: tell the host when the play-head moves (jv880's highlight mechanism) */
-        int ri = w->run_idx[n2], b[8];
+    for (int n2 = 0; n2 < 2; n2++) {
+        /* The host does not re-read a toggle or ring by itself, so push what changed on its own (jv880's highlight
+         * mechanism): the running light as the play-head moves, and step LEDs when the pattern changes (Advance,
+         * Reset, Corrupt). Cheap: one state read per line per block. */
+        int b[8], pl = core_bits(w, n2, b);
+        for (int i = 0; i < 8; i++) {
+            if (w->last_bits[n2][i] >= 0 && w->last_bits[n2][i] != b[i] && w->step_idx[n2][i] >= 0)
+                w->master(&w->fx, audioMasterAutomate, w->step_idx[n2][i], 0, 0, (float)b[i]);
+            w->last_bits[n2][i] = b[i];
+        }
+        int ri = w->run_idx[n2];
         if (ri < 0) continue;
-        float v = 0.0f;
-        if (w->was_playing) { int pl = core_bits(w, n2, b); v = pl >= 0 && pl < 8 ? (float)(pl + 1) : 0.0f; }
+        float v = w->was_playing && pl >= 0 && pl < 8 ? (float)(pl + 1) : 0.0f;
         if (v != w->cache[ri]) {
             w->cache[ri] = v;
             w->master(&w->fx, audioMasterAutomate, ri, 0, 0, to_norm(&PARAMS[ri], v));
@@ -424,6 +434,8 @@ extern "C" __attribute__((visibility("default"))) AEffect *VSTPluginMain(audioMa
     w->inst = g_api->create_instance("", nullptr);   /* "" : no state file (MAZE_VST) */
     if (!w->inst) { LOG("[maze_seq_vst] create_instance failed\n"); delete w; return nullptr; }
     reset_defaults(w);
+    for (int n2 = 0; n2 < 2; n2++) for (int i = 0; i < 8; i++) { w->step_idx[n2][i] = -1; w->last_bits[n2][i] = -1; }
+    for (int i = 0; i < NPARAMS; i++) { int sq, st; if (is_step(&PARAMS[i], &sq, &st)) w->step_idx[sq][st] = i; }
     for (int i = 0; i < NPARAMS; i++) { if (!std::strcmp(PARAMS[i].key, "s1_run")) w->run_idx[0] = i; if (!std::strcmp(PARAMS[i].key, "s2_run")) w->run_idx[1] = i; }
     alsa_open(w);
 

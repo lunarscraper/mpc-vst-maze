@@ -16,4 +16,7 @@ unchanged) and marked `MPC-VST-ONLY`:
 4. **`host_bpm`**: tempo for LFO sync. The core estimates tempo from the wall-clock gap between clock pulses, which is
    meaningless in a plugin where pulses arrive in a burst per audio block.
 
-Re-vendor by diffing against force-maze's `src/` at a newer commit and re-applying these four.
+5. **`s1_adv` / `s2_adv`**: rotate that line's pattern (gates and CV of its active steps) one step forward per press,
+   also while stopped. The Force build's version only moves the play-head, which is inaudible when stopped.
+
+Re-vendor by diffing against force-maze's `src/` at a newer commit and re-applying these five.
