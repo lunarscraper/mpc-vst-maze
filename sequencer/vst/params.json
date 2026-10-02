@@ -324,11 +324,6 @@
    "default": 0
   },
   {
-   "key": "panic",
-   "name": "Panic",
-   "momentary": true
-  },
-  {
    "key": "lfo1_shape",
    "name": "LFO1 Shape",
    "options": [
