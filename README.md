@@ -135,3 +135,25 @@ version. The first VST release, `maze-voice-vst-v1.0.0`, is in
 ## License
 
 MIT. See [LICENSE](LICENSE). Copyright © sd88me.
+
+## Maze Sequencer (second plugin in this repo)
+
+**Maze Sequencer** is the companion MIDI plugin: a dual 8-step generative sequencer in the Labyrinth style
+(`sequencer/`). It makes no sound; it plays two random-CV step lines, quantised to a scale, over MIDI into other tracks
+(for example Maze Voice). Add it to an instrument track, set a track's MIDI input to the port **Maze Sequencer** and its
+channel to the line's **MIDI CH**, then start the transport.
+
+| Control | What it does |
+|---|---|
+| STEP 1-8 | the line's gates; a step turned on gets a fresh random pitch |
+| CORRUPT | chance per step of mutating its pitch (and, above half, its gate) |
+| CV RANGE / LENGTH | pitch spread of the random values / 1 to 8 steps |
+| MIDI CH | output channel of this line (independent per line) |
+| ADVANCE / REGEN | step the play-head / re-roll the line's pattern |
+| TRIG MIX | velocity crossfade between line A and B |
+| RESET BOTH | snap both play-heads to step 1 every 1/2/4/8 bars |
+| NOTE RATE / NOTE LEN / TRANSPOSE / SCALE / KEY | timing and pitch |
+| LFO 1 / 2 | shape, rate or synced division, retrigger; depth to eight destinations |
+
+Build with `sequencer/vst/build.sh`, test offline with `sequencer/vst/test.sh`. Its core is vendored
+(`sequencer/src/VENDORED.md`). It is released separately from Maze Voice (tags `maze-sequencer-vst-v*`).
