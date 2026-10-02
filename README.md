@@ -238,8 +238,6 @@ bipolar (-100 to +100) and add to the knob's own value, so a destination with de
 Useful examples: a slow sine on A Length makes the line breathe between short and long. A synced saw on Corrupt ramps the
 mutation up across 4 bars. A square on Trig Mix alternates between A and B.
 
-> The RETRIG switch is stored with the project but does not act yet in this version: the LFO phase is not restarted by it.
-
 ### Q-Links
 
 SEQ A, SEQ B and TIMING / SCALE pages cover the main controls, and LFO 1 and LFO 2 pages cover the modulation depths. The
