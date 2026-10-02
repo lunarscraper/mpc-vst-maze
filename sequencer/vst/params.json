@@ -112,7 +112,7 @@
   },
   {
    "key": "s1_regen",
-   "name": "A Regen",
+   "name": "A Reset",
    "momentary": true
   },
   {
@@ -226,7 +226,7 @@
   },
   {
    "key": "s2_regen",
-   "name": "B Regen",
+   "name": "B Reset",
    "momentary": true
   },
   {

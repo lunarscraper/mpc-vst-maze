@@ -149,7 +149,7 @@ channel to the line's **MIDI CH**, then start the transport.
 | CORRUPT | chance per step of mutating its pitch (and, above half, its gate) |
 | CV RANGE / LENGTH | pitch spread of the random values / 1 to 8 steps |
 | MIDI CH | output channel of this line (independent per line) |
-| ADVANCE / REGEN | step the play-head / re-roll the line's pattern |
+| ADVANCE / RESET | rotate the line's pattern one step forward per press (works while stopped) / re-roll the line's pattern |
 | TRIG MIX | velocity crossfade between line A and B |
 | RESET BOTH | snap both play-heads to step 1 every 1/2/4/8 bars |
 | NOTE RATE / NOTE LEN / TRANSPOSE / SCALE / KEY | timing and pitch |

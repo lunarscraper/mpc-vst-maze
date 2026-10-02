@@ -85,6 +85,25 @@ int main(void) {
     CHECK(a->getP(a, P("s1_step5")) < 0.5f && a->getP(a, P("s1_step4")) > 0.5f, "step 6 flips off alone");
     a->setP(a, P("s1_step5"), 1.0f);
 
+    /* Advance rotates the active steps one step forward, also while stopped, and tells the host the LEDs changed */
+    for (int i = 0; i < 8; i++) a->setP(a, P("s1_step0") + i, i == 0 ? 1.0f : 0.0f);
+    a->setP(a, P("s1_length"), 7.0f / 7.0f);   /* 1..8 -> 8 */
+    a->pr(a, 0, (float *[]){ (float[128]){0}, (float[128]){0} }, 128);
+    int before = automated[P("s1_step1")];
+    a->setP(a, P("s1_adv"), 1.0f);
+    a->pr(a, 0, (float *[]){ (float[128]){0}, (float[128]){0} }, 128);
+    CHECK(a->getP(a, P("s1_step1")) > 0.5f && a->getP(a, P("s1_step0")) < 0.5f, "advance moved the lit step 1 -> 2 while stopped");
+    CHECK(automated[P("s1_step1")] == before + 1 && automated[P("s1_step0")] >= 1, "host told the LEDs changed (%d)", automated[P("s1_step1")] - before);
+    a->setP(a, P("s1_adv"), 0.0f);
+    for (int k = 0; k < 7; k++) { a->setP(a, P("s1_adv"), 1.0f); a->pr(a, 0, (float *[]){ (float[128]){0}, (float[128]){0} }, 128); a->setP(a, P("s1_adv"), 0.0f); }
+    CHECK(a->getP(a, P("s1_step0")) > 0.5f && a->getP(a, P("s1_step1")) < 0.5f, "8 more presses wrap round to step 1");
+    /* a Reset re-rolls the line and the LEDs follow */
+    a->setP(a, P("s1_regen"), 1.0f); a->pr(a, 0, (float *[]){ (float[128]){0}, (float[128]){0} }, 128); a->setP(a, P("s1_regen"), 0.0f);
+    a->d(a, 8, P("s1_regen"), 0, name, 0); CHECK(!strcmp(name, "A Reset"), "reset button name '%s'", name);
+    /* back to a known all-on pattern for the transport checks below */
+    for (int i = 0; i < 8; i++) a->setP(a, P("s1_step0") + i, 0.0f);
+    for (int i = 0; i < 8; i++) a->setP(a, P("s1_step0") + i, 1.0f);
+
     /* triggers: fire and spring back (the host stub counts the automate) */
     a->setP(a, P("s2_regen"), 1.0f);
     a->pr(a, 0, (float *[]){ (float[128]){0}, (float[128]){0} }, 128);
