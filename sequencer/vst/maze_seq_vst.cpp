@@ -7,7 +7,8 @@
  *   host_shim.cpp (MockbaMod)              maze_seq_vst.cpp (MPC plugin)
  *   ------------------------------------   ---------------------------------
  *   RtMidi clock in from the transport     audioMasterGetTime (ppqPos/tempo) ->
- *                                           synthetic 24-PPQN 0xF8/0xFA/0xFC
+ *                                           synthetic 24-PPQN 0xF8/0xFA/0xFC, pulses by
+ *                                           absolute index (PpqClock, as in mpc-vst-acid)
  *   CC / control socket -> set_param       VST parameters (params.h) -> set_param
  *   host->midi_send_internal -> RtMidi     host->midi_send_internal -> an ALSA seq port
  *                                           (MPC OS ignores a plugin's VST MIDI output)
@@ -89,8 +90,59 @@ static FILE *g_log;
 
 #ifdef MAZE_VST_TEST   /* host_test.c: what went out, without an ALSA device */
 static std::atomic<int> g_note_ons[16];
+static std::atomic<long long> g_test_pulse{0};        /* absolute pulse being fed right now */
+static std::atomic<long long> g_last_on_pulse[16];    /* ... and the one each channel's last note-on went out on */
 extern "C" int maze_vst_note_ons(int ch) { return g_note_ons[ch & 15].load(); }
+extern "C" long long maze_vst_last_on_pulse(int ch) { return g_last_on_pulse[ch & 15].load(); }
 #endif
+
+/* ---------------------------------------------------------------------------
+ * PpqClock: host ppqPos -> 24-PPQN pulses by ABSOLUTE pulse index (same clock as mpc-vst-acid).
+ *
+ * The first version fed "every pulse between the previous callback's ppqPos and this one's",
+ * rounding the start UP to a pulse. Whenever ppqPos sat exactly on a pulse (always at transport
+ * start: ppq 0, and after a locate to a bar line) that pulse was fed twice, and since the core
+ * COUNTS pulses from the Start message, every step then sat off the MPC grid: at 1/16 the notes
+ * came on pulses 4, 10, 16... instead of 0, 6, 12... (first note late, all following ones about
+ * a 1/48 note before the beat). A jump of more than a beat restarted the count at a random phase.
+ *
+ * Here pulse N simply IS ppq N/24. We remember the last index fed and feed (sent, last-in-this-
+ * block]: an overlap feeds nothing twice, a small hole is caught up at once, and a real jump
+ * (locate, loop, restart) is detected and re-anchored. The core's pulse counter is set to the
+ * same index ("host_pulse", MAZE_VST patch), so a step fires exactly when the index is a
+ * multiple of the note rate: on the grid, whatever happened before.
+ * ------------------------------------------------------------------------- */
+struct PpqClock {
+    long long sent = 0;        /* absolute index of the last pulse fed */
+    bool resync = true;        /* next block re-anchors (transport start) */
+    bool place = true;         /* core pulse counter must be set before the next pulse */
+    long pulses = 0, gaps = 0, dups = 0, jumps = 0;   /* diagnostics */
+};
+static const long long PPQ_JUMP_TOL = 12;   /* pulses (half a beat): beyond this it's a locate, not jitter */
+
+/* One audio block. Returns true and sets [*from, *to] (inclusive pulse indices) if pulses are due. */
+static inline bool ppq_clock_block(PpqClock *c, double ppq, double tempo, double sr, int frames,
+                                   long long *from, long long *to, bool *jumped) {
+    double end = ppq + frames * (tempo / 60.0) / sr;
+    long long first = (long long)std::ceil(ppq * 24.0 - 1e-6);       /* first pulse at/after block start */
+    long long last = (long long)std::ceil(end * 24.0 - 1e-6) - 1;    /* last pulse before block end */
+    *jumped = false;
+    if (c->resync) {
+        c->sent = first - 1; c->resync = false; c->place = true;
+    } else if (first > c->sent + 1 + PPQ_JUMP_TOL || last < c->sent - PPQ_JUMP_TOL) {
+        *jumped = true; c->jumps++;
+        c->sent = first - 1; c->place = true;
+    }
+    if (first > c->sent + 1) c->gaps += first - (c->sent + 1);                              /* hole: caught up now */
+    else if (first <= c->sent) c->dups += (last < c->sent ? last : c->sent) - first + 1;   /* overlap: not fed twice */
+    if (last <= c->sent) return false;
+    *from = c->sent + 1; *to = last;
+    c->pulses += last - c->sent;
+    c->sent = last;
+    return true;
+}
+
+#define BUILD_ID "clockfix-2026-10-06"
 
 /* ---------------------------------------------------------------------------
  * Per-instance state
@@ -109,6 +161,9 @@ struct Plugin {
     bool held[NPARAMS] = {false};  /* momentary params: host currently reports them pressed */
     float open[NPARAMS] = {0};     /* popup "open" flags (popup.h): wrapper-only, not saved */
     double last_ppq = 0.0;
+    PpqClock clk;
+    int jump_logs = 0;
+    long blocks = 0;
     bool was_playing = false;
     float sent_bpm = 0.0f;
     snd_seq_t *seq = nullptr;
@@ -143,7 +198,7 @@ static void alsa_flush(Plugin *w) {   /* send and empty w->out; called with w->l
         const uint8_t *m = w->out.m[i];
         uint8_t type = m[0] & 0xF0, ch = m[0] & 0x0F;
 #ifdef MAZE_VST_TEST
-        if (type == 0x90 && m[2] > 0) g_note_ons[ch]++;
+        if (type == 0x90 && m[2] > 0) { g_note_ons[ch]++; g_last_on_pulse[ch] = g_test_pulse.load(); }
 #endif
         if (!w->seq || w->seq_port < 0) continue;
         snd_seq_event_t ev;
@@ -243,7 +298,7 @@ static void apply(Plugin *w, int i, float v) {
  * Transport / clock synthesis: audioMasterGetTime -> a 24-PPQN clock, the same byte stream
  * host_shim.cpp fed the core from real MIDI clock. Once per audio block.
  * ------------------------------------------------------------------------- */
-static void feed_transport(Plugin *w) {
+static void feed_transport(Plugin *w, int32_t frames) {
     VstTimeInfo *ti = (VstTimeInfo *)w->master(&w->fx, audioMasterGetTime, 0, kVstTempoValid | kVstPpqPosValid, 0, 0);
     bool playing = ti && (ti->flags & kVstTransportPlaying);
     if (ti && (ti->flags & kVstTempoValid) && ti->tempo >= 20 && std::fabs((float)ti->tempo - w->sent_bpm) > 0.01f) {
@@ -252,16 +307,40 @@ static void feed_transport(Plugin *w) {
         w->sent_bpm = (float)ti->tempo;
         core_set(w, "host_bpm", b);   /* LFO sync tempo (MAZE_VST patch) */
     }
-    if (playing && !w->was_playing) { w->last_ppq = ti->ppqPos; core_midi(w, 0xFA); }
-    else if (!playing && w->was_playing) core_midi(w, 0xFC);
+    if (playing && !w->was_playing) {
+        w->last_ppq = ti->ppqPos;
+        w->clk.resync = true;   /* anchor the pulse index on this block */
+        core_midi(w, 0xFA);
+    } else if (!playing && w->was_playing) {
+        core_midi(w, 0xFC);
+        LOG("[maze_seq_vst] stop at ppq %.3f | clock: %ld pulses, %ld caught up, %ld overlapped, %ld jumps\n",
+            w->last_ppq, w->clk.pulses, w->clk.gaps, w->clk.dups, w->clk.jumps);
+    }
     w->was_playing = playing;
 
-    if (playing && ti) {
-        const double step = 1.0 / 24.0;   /* 24 PPQN, in quarter notes */
-        double start = w->last_ppq, end = ti->ppqPos;
-        if (end < start || end - start > 1.0) start = end;   /* loop/rewind/jump: resync, don't flood pulses */
-        double next = std::ceil(start / step) * step;
-        for (; next < end + 1e-9; next += step) core_midi(w, 0xF8);
+    if (playing && ti && ti->tempo > 0) {
+        double sr = ti->sampleRate > 0 ? ti->sampleRate : 44100.0;
+        long long from = 0, to = -1;
+        bool jumped = false;
+        long long before = w->clk.sent;
+        bool due = ppq_clock_block(&w->clk, ti->ppqPos, ti->tempo, sr, frames, &from, &to, &jumped);
+        if (jumped && w->jump_logs < 20) {
+            w->jump_logs++;
+            LOG("[maze_seq_vst] ppq jump: last pulse %lld -> ppq %.4f (pulse %.2f), bpm %.2f, block %d\n",
+                before, ti->ppqPos, ti->ppqPos * 24.0, ti->tempo, (int)frames);
+        }
+        if (due && w->clk.place) {   /* core counter = absolute index: the pulse fed next becomes `from` */
+            char b[24];
+            std::snprintf(b, sizeof b, "%lld", from - 1);
+            core_set(w, "host_pulse", b);
+            w->clk.place = false;
+        }
+        for (long long idx = from; due && idx <= to; idx++) {
+#ifdef MAZE_VST_TEST
+            g_test_pulse = idx;
+#endif
+            core_midi(w, 0xF8);
+        }
         w->last_ppq = ti->ppqPos;
     }
 }
@@ -272,7 +351,7 @@ static void feed_transport(Plugin *w) {
 static void processReplacing(AEffect *e, float **in, float **out, int32_t n) {
     (void)in;
     Plugin *w = (Plugin *)e->object;
-    feed_transport(w);
+    feed_transport(w, n);
     for (int n2 = 0; n2 < 2; n2++) {
         /* The host does not re-read a toggle or ring by itself, so push what changed on its own (jv880's highlight
          * mechanism): the running light as the play-head moves, and step LEDs when the pattern changes (Advance,
@@ -453,6 +532,6 @@ extern "C" __attribute__((visibility("default"))) AEffect *VSTPluginMain(audioMa
     e->uniqueID = PLUG_UID;
     e->version = PLUG_VERSION;
     e->object = w;
-    LOG("[maze_seq_vst] up, %d params\n", NPARAMS);
+    LOG("[maze_seq_vst] up (" BUILD_ID "), %d params\n", NPARAMS);
     return e;
 }

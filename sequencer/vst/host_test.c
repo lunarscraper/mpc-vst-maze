@@ -33,6 +33,7 @@ enum { kPlaying = 1 << 1, kPpq = 1 << 9, kTempo = 1 << 10 };
 
 extern AEffect *VSTPluginMain(cb);
 extern int maze_vst_note_ons(int ch);
+extern long long maze_vst_last_on_pulse(int ch);
 
 static TI g_ti;
 static int automated[NPARAMS];
@@ -117,11 +118,20 @@ int main(void) {
     float L[128], R[128], *out[2] = { L, R };
     double ppq_per_block = (g_ti.tempo / 60.0) * (128.0 / 44100.0);
     int seen[9] = {0}, run = P("s1_run");
+    int offgrid = 0, ons = 0, first_on_block = -1;   /* note rate is 1/8 here: every note-on must sit on a multiple of 12 pulses */
     for (int k = 0; k < 1100; k++) {
+        int had = maze_vst_note_ons(2);
         a->pr(a, 0, out, 128);
+        if (maze_vst_note_ons(2) != had) {
+            ons++;
+            if (first_on_block < 0) first_on_block = k;
+            if (maze_vst_last_on_pulse(2) % 12 != 0) offgrid++;
+        }
         seen[(int)lroundf(a->getP(a, run) * 8)]++;
         g_ti.ppqPos += ppq_per_block;
     }
+    CHECK(first_on_block == 0, "first note on the downbeat (block %d)", first_on_block);
+    CHECK(ons >= 8 && offgrid == 0, "all %d note-ons of line A on the 1/8 grid (%d off)", ons, offgrid);
     int distinct = 0;
     for (int i = 1; i <= 8; i++) distinct += seen[i] > 0;
     CHECK(distinct >= 6, "running light visited %d of 8 steps while playing", distinct);
@@ -130,6 +140,19 @@ int main(void) {
     CHECK(maze_vst_note_ons(2) >= 8, "line A (CH 3) sent %d note-ons", maze_vst_note_ons(2));
     CHECK(maze_vst_note_ons(4) >= 1, "line B (CH 5) sent %d note-ons", maze_vst_note_ons(4));
     CHECK(maze_vst_note_ons(0) == 0 && maze_vst_note_ons(1) == 0, "nothing on the default channel");
+    /* host misbehaviour: a repeated block, a late ppqPos, a locate off the grid, a rate change. Still on the grid. */
+    offgrid = 0; ons = 0;
+    for (int k = 0; k < 1500; k++) {
+        int had = maze_vst_note_ons(2);
+        a->pr(a, 0, out, 128);
+        if (maze_vst_note_ons(2) != had) { ons++; if (maze_vst_last_on_pulse(2) % 12 != 0) offgrid++; }
+        if (k % 97 == 5) continue;                                   /* ppqPos not advanced: block seen twice */
+        g_ti.ppqPos += ppq_per_block * (k % 53 == 7 ? 3.0 : 1.0);    /* hole of two blocks */
+        if (k == 400) g_ti.ppqPos = 17.0 + 5.0 / 24.0;               /* locate forward, 5 pulses off a beat */
+        if (k == 800) g_ti.ppqPos = 4.0;                             /* locate back onto a bar line */
+        if (k == 1100) { a->setP(a, P("note_rate"), 3.0f / 5.0f); a->setP(a, P("note_rate"), 2.0f / 5.0f); }   /* 1/4 and back to 1/8 */
+    }
+    CHECK(ons >= 8 && offgrid == 0, "after repeats, holes, locates and a rate change: %d note-ons, %d off the grid", ons, offgrid);
     g_ti.flags = kTempo;   /* stop */
     a->pr(a, 0, out, 128);
     CHECK(a->getP(a, run) == 0.0f, "running light off after stop");

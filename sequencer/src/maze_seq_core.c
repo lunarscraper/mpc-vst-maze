@@ -555,6 +555,11 @@ static void maze_set_param(void *inst, const char *key, const char *val){
     else if (!strcmp(key,"pad_semis")){ L->pad_semis=(v<-60?-60:(v>60?60:v)); set_root_from_key(L); }
 #ifdef MAZE_VST   /* MPC-VST-ONLY */
     else if (!strcmp(key,"host_bpm")){ float b=(float)atof(val); if (b>=20.0f && b<=300.0f) L->lfoBpm=b; }
+    else if (!strcmp(key,"host_pulse")){   /* place the pulse counter: the next 0xF8 is absolute pulse <val>+1 (ppq*24) */
+        long np=atol(val), d=np-L->pulse;
+        L->pulse=np;
+        for (int i=0;i<2;i++) L->s[i].off_pulse+=d;   /* sounding notes keep their remaining length */
+    }
     else if (!strcmp(key,"s1_regen")||!strcmp(key,"s2_regen")){
         seq_t *q=&L->s[key[1]=='2'?1:0]; int len=q->length, ch=q->channel, cr=q->corrupt, rg=q->cv_range, rb=q->reset_bars;
         seq_randomize(q); q->length=len; q->channel=ch; q->corrupt=cr; q->cv_range=rg; q->reset_bars=rb;

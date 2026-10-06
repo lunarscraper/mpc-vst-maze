@@ -19,4 +19,9 @@ unchanged) and marked `MPC-VST-ONLY`:
 5. **`s1_adv` / `s2_adv`**: rotate that line's pattern (gates and CV of its active steps) one step forward per press,
    also while stopped. The Force build's version only moves the play-head, which is inaudible when stopped.
 
-Re-vendor by diffing against force-maze's `src/` at a newer commit and re-applying these five.
+6. **`host_pulse`** (`set_param`): sets the pulse counter, so the wrapper can make it the absolute 24-PPQN index of
+   the host position (`ppqPos * 24`). Steps fire on `pulse % RATE_PULSES == 0`, so they then sit ON the MPC grid:
+   the first step on the downbeat, and still on the grid after a locate or a note-rate change. Without it the core
+   counts from the Start message, which put every step off the grid in a plugin (see `maze_seq_vst.cpp`, PpqClock).
+
+Re-vendor by diffing against force-maze's `src/` at a newer commit and re-applying these six.
