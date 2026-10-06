@@ -2,8 +2,9 @@
 
 💬 Questions or feedback? Join the [Open MPC Discord](https://discord.gg/sRRysZSgu3).
 
-> **Requires MPC OS 3.x.** MPC OS 2.x needs further development: the touchscreen skins do not draw there yet (the page
-> stays empty). See [MPC OS 2.x vs 3.x](https://github.com/sd88me/mpc-vst-plugins#mpc-os-2x-vs-3x) in the main repo.
+> **MPC OS 3.x and 2.x.** Releases from 1.0.3 are built for glibc 2.31 with the MPC OS 2.x skin shape, so the catalog labels them
+> "MPC OS 2.x + 3.x". They are tested on a Force (3.x); a 2.x unit has not tried them yet (Maze Sequencer also needs
+> `libasound.so.2`). See [MPC OS 2.x vs 3.x](https://github.com/sd88me/mpc-vst-plugins#mpc-os-2x-vs-3x) in the main repo.
 
 Two native MPC OS VST2 plugins for Akai MPC standalone devices (Force, MPC Live/Live II, One, X, Key 61), both inspired
 by the Moog Labyrinth. They load in MPC's own built-in plugin host and work on their own or together:
