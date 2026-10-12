@@ -188,6 +188,54 @@ int main(void) {
           "channel and steps carried over");
     b->d(b, 7, P("transpose"), 0, disp, 0); CHECK(!strcmp(disp, "24"), "b transpose '%s'", disp);
 
+    /* control by MIDI CC: only on the Control Ch (default 14); the chunk carries the channel */
+    {
+        struct { int32_t type, byteSize, deltaFrames, flags, noteLength, noteOffset; unsigned char midiData[4]; char d, v, r1, r2; } m;
+        struct { int32_t numEvents; intptr_t reserved; void *events[2]; } evs;
+        float l2[128], r2[128], *o2[2] = { l2, r2 };
+        g_ti.flags = kPpq | kTempo;
+#define CC(chan, num, val) do { memset(&m, 0, sizeof m); m.type = 1; m.byteSize = sizeof m; \
+            m.midiData[0] = (unsigned char)(0xB0 | ((chan) - 1)); m.midiData[1] = (num); m.midiData[2] = (val); \
+            evs.numEvents = 1; evs.reserved = 0; evs.events[0] = &m; evs.events[1] = 0; a->d(a, 25, 0, 0, &evs, 0); a->pr(a, 0, o2, 128); } while (0)
+        int cch = P("cc_ch");
+        a->d(a, 7, cch, 0, disp, 0);           CHECK(!strcmp(disp, "14"), "control channel defaults to '%s'", disp);
+        CC(14, 10, 127); a->d(a, 7, P("s1_corrupt"), 0, disp, 0); CHECK(!strcmp(disp, "100"), "CC 10 on ch 14 -> A corrupt '%s'", disp);
+        CHECK(automated[P("s1_corrupt")] >= 1, "host told about the change");
+        CC(1, 10, 0);    a->d(a, 7, P("s1_corrupt"), 0, disp, 0); CHECK(!strcmp(disp, "100"), "another channel is ignored '%s'", disp);
+        CC(14, 10, 0);
+        CC(14, 12, 0);   a->d(a, 7, P("s1_length"), 0, disp, 0);  CHECK(!strcmp(disp, "1"), "CC 12 -> A length '%s'", disp);
+        CC(14, 12, 127);
+        CC(14, 53, 127); a->d(a, 7, P("transpose"), 0, disp, 0);  CHECK(!strcmp(disp, "48"), "CC 53 -> transpose '%s'", disp);
+        CC(14, 53, 95);  a->d(a, 7, P("transpose"), 0, disp, 0);  CHECK(!strcmp(disp, "24"), "CC 53 = 95 -> transpose '%s'", disp);
+        CC(14, 22, 0);   CHECK(a->getP(a, P("s1_step2")) < 0.5f, "CC 22 = 0 switches A step 3 off");
+        CC(14, 22, 127); CHECK(a->getP(a, P("s1_step2")) > 0.5f, "CC 22 = 127 switches A step 3 on");
+        CC(14, 82, 127); a->d(a, 7, P("lfo2_sync"), 0, disp, 0);  CHECK(!strcmp(disp, "SYNC"), "CC 82 -> LFO 2 sync '%s'", disp);
+        CC(14, 82, 0);
+        a->setP(a, cch, 3.0f / 16.0f);
+        a->d(a, 7, cch, 0, disp, 0);           CHECK(!strcmp(disp, "3"), "control channel set to '%s'", disp);
+        CC(14, 12, 0);   a->d(a, 7, P("s1_length"), 0, disp, 0);  CHECK(!strcmp(disp, "8"), "old channel no longer listened to '%s'", disp);
+        n = a->d(a, 23, 0, 0, &chunk, 0);
+        CHECK(strstr((char *)chunk, "cc_ch=3;") != 0, "chunk carries the control channel");
+        strncpy(saved, (char *)chunk, sizeof saved - 1);
+        b->d(b, 24, 0, n, saved, 0);
+        b->d(b, 7, cch, 0, disp, 0);           CHECK(!strcmp(disp, "3"), "and restores it '%s'", disp);
+        a->setP(a, cch, 0.0f);
+        CC(3, 12, 0);    a->d(a, 7, P("s1_length"), 0, disp, 0);  CHECK(!strcmp(disp, "8"), "OFF ignores every CC '%s'", disp);
+
+        /* audio path: instrument writes silence, effect (Maze Sequencer FX) passes the input through */
+        float il[128], ir[128], *in2[2] = { il, ir };
+        for (int i = 0; i < 128; i++) { il[i] = i / 128.0f; ir[i] = -i / 256.0f; l2[i] = r2[i] = 9.0f; }
+        a->pr(a, a->ni ? in2 : 0, o2, 128);
+        if (a->ni) {
+            CHECK(a->ni == 2 && !(a->flags & (1 << 8)) && a->d(a, 35, 0, 0, 0, 0) == 1, "effect: 2 inputs, not a synth, category Effect");
+            CHECK(!memcmp(il, l2, sizeof il) && !memcmp(ir, r2, sizeof ir), "effect passes audio through");
+            a->pr(a, in2, in2, 128);
+            CHECK(il[64] == 64 / 128.0f, "effect in-place pass-through");
+        } else {
+            CHECK((a->flags & (1 << 8)) && a->d(a, 35, 0, 0, 0, 0) == 2 && l2[5] == 0.0f && r2[5] == 0.0f, "instrument: synth, silence out");
+        }
+    }
+
     a->d(a, 1, 0, 0, 0, 0);
     b->d(b, 1, 0, 0, 0, 0);
     printf("%s\n", fails ? "FAILED" : "OK");

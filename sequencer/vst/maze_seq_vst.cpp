@@ -17,6 +17,21 @@
  * parameter itself (cache[]); only the step bits are read back from the core, since "flip"
  * and "regen" change them. The pattern (bits + CV) travels in the project chunk as the
  * core's "pattern" string (MAZE_VST patch, see src/VENDORED.md).
+ *
+ * TWO VARIANTS from this one file (params.h decides; ../vst-fx/vst.json has "effect": true):
+ *   Maze Sequencer     instrument (IsSynth, 0 in / 2 out, silence) -> takes one of the 8 plugin instrument slots
+ *   Maze Sequencer FX  insert effect (PLUG_EFFECT: 2 in / 2 out, audio passed through untouched, category
+ *                      Effect, own UID, ALSA port "Maze Sequencer FX") -> takes NO instrument slot
+ *
+ * CONTROL BY MIDI CC (both variants, ctl_in.h): a second ALSA port "Control In" subscribes itself to every
+ * hardware MIDI input. CCs on the channel chosen with "Control Ch" (OFF, 1..16; default 14; saved with the
+ * project) set parameters:
+ *   line A   CC 10 corrupt, 11 CV range, 12 length, 13 advance, 14 reset, CC 20..27 steps 1..8
+ *   line B   the same + 20 (CC 30..34, CC 40..47)
+ *   timing   CC 50 trig mix, 51 note rate, 52 note length, 53 transpose, 54 scale, 55 key, 56 reset bars
+ *   LFO 1    CC 60 shape, 61 rate, 62 sync, 63 sync div, 64 retrig, 65 A corrupt, 66 A range, 67 A length,
+ *            68 trig mix, 69 B corrupt, 70 B range, 71 B length, 72 note len;  LFO 2: the same + 20 (CC 80..92)
+ *   (buttons fire at value >= 64, switches are on from 64)
  * ========================================================================== */
 #include <atomic>
 #include <cmath>
@@ -54,6 +69,13 @@ struct AEffect {
     void (*processDoubleReplacing)(AEffect *, double **, double **, int32_t);
     char future[56];
 };
+typedef struct { int32_t type, byteSize, deltaFrames, flags; char data[16]; } VstEvent;
+typedef struct {
+    int32_t type, byteSize, deltaFrames, flags, noteLength, noteOffset;
+    unsigned char midiData[4];
+    char detune, noteOffVelocity, reserved1, reserved2;
+} VstMidiEvent;
+typedef struct { int32_t numEvents; intptr_t reserved; VstEvent *events[2]; } VstEvents;
 typedef struct {
     double samplePos, sampleRate, nanoSeconds, ppqPos, tempo, barStartPos, cycleStartPos, cycleEndPos;
     int32_t timeSigNumerator, timeSigDenominator, smpteOffset, smpteFrameRate, samplesToNextClock, flags;
@@ -87,6 +109,13 @@ static std::mutex g_api_init_lock;
 static std::atomic<int> g_instance_count{0};
 static FILE *g_log;
 #define LOG(...) do { if (g_log) { std::fprintf(g_log, __VA_ARGS__); std::fflush(g_log); } } while (0)
+#define CTL_TAG "[maze_seq_vst]"
+#include "ctl_in.h"   /* "Control In": CCs from hardware controllers */
+#ifdef PLUG_EFFECT
+#define PLUG_MODE "effect"
+#else
+#define PLUG_MODE "instrument"
+#endif
 
 #ifdef MAZE_VST_TEST   /* host_test.c: what went out, without an ALSA device */
 static std::atomic<int> g_note_ons[16];
@@ -142,7 +171,7 @@ static inline bool ppq_clock_block(PpqClock *c, double ppq, double tempo, double
     return true;
 }
 
-#define BUILD_ID "clockfix-2026-10-06"
+#define BUILD_ID "fx-cc-2026-10-07"
 
 /* ---------------------------------------------------------------------------
  * Per-instance state
@@ -168,6 +197,9 @@ struct Plugin {
     float sent_bpm = 0.0f;
     snd_seq_t *seq = nullptr;
     int seq_port = -1;
+    CtlIn ctl;                     /* Control In port (ctl_in.h) */
+    int cc_idx = -1;               /* param index of the wrapper-only "cc_ch" (Control Ch) */
+    long no_ti = 0;                /* diagnostics: blocks without host time info */
     char chunk[4096] = {0};
 };
 
@@ -179,17 +211,18 @@ static void copy_str(void *dst, const std::string &s, size_t max) {
 
 /* ---- ALSA seq output ----------------------------------------------------- */
 static void alsa_open(Plugin *w) {
-    if (snd_seq_open(&w->seq, "default", SND_SEQ_OPEN_OUTPUT, SND_SEQ_NONBLOCK) < 0) { w->seq = nullptr; return; }
+    if (snd_seq_open(&w->seq, "default", SND_SEQ_OPEN_DUPLEX, SND_SEQ_NONBLOCK) < 0) { w->seq = nullptr; return; }
     snd_seq_set_client_pool_output(w->seq, 2048);
     int n = g_instance_count.fetch_add(1);
     char name[40];
-    if (n == 0) std::snprintf(name, sizeof name, "Maze Sequencer");
-    else std::snprintf(name, sizeof name, "Maze Sequencer %d", n + 1);
+    if (n == 0) std::snprintf(name, sizeof name, PLUG_NAME);            /* "Maze Sequencer" / "Maze Sequencer FX" */
+    else std::snprintf(name, sizeof name, PLUG_NAME " %d", n + 1);
     snd_seq_set_client_name(w->seq, name);
     w->seq_port = snd_seq_create_simple_port(w->seq, "MIDI Out",
         SND_SEQ_PORT_CAP_READ | SND_SEQ_PORT_CAP_SUBS_READ,
         SND_SEQ_PORT_TYPE_MIDI_GENERIC | SND_SEQ_PORT_TYPE_APPLICATION);
     LOG("[maze_seq_vst] ALSA client '%s' port %d\n", name, w->seq_port);
+    ctl_open(w->seq, &w->ctl);
 }
 static void alsa_flush(Plugin *w) {   /* send and empty w->out; called with w->lock held (UI and audio threads both get here) */
     int n = w->out.n;
@@ -289,6 +322,7 @@ static void apply(Plugin *w, int i, float v) {
         return;
     }
     w->cache[i] = v;
+    if (i == w->cc_idx) return;   /* Control Ch: wrapper only, the core doesn't know it */
     if (!std::strcmp(p->key, "s1_channel") || !std::strcmp(p->key, "s2_channel")) v -= 1;   /* 1..16 -> 0..15 */
     std::snprintf(buf, sizeof buf, "%d", (int)v);
     core_set(w, p->key, buf);
@@ -300,6 +334,7 @@ static void apply(Plugin *w, int i, float v) {
  * ------------------------------------------------------------------------- */
 static void feed_transport(Plugin *w, int32_t frames) {
     VstTimeInfo *ti = (VstTimeInfo *)w->master(&w->fx, audioMasterGetTime, 0, kVstTempoValid | kVstPpqPosValid, 0, 0);
+    if (!ti) w->no_ti++;
     bool playing = ti && (ti->flags & kVstTransportPlaying);
     if (ti && (ti->flags & kVstTempoValid) && ti->tempo >= 20 && std::fabs((float)ti->tempo - w->sent_bpm) > 0.01f) {
         char b[16];
@@ -313,8 +348,10 @@ static void feed_transport(Plugin *w, int32_t frames) {
         core_midi(w, 0xFA);
     } else if (!playing && w->was_playing) {
         core_midi(w, 0xFC);
-        LOG("[maze_seq_vst] stop at ppq %.3f | clock: %ld pulses, %ld caught up, %ld overlapped, %ld jumps\n",
-            w->last_ppq, w->clk.pulses, w->clk.gaps, w->clk.dups, w->clk.jumps);
+        LOG("[maze_seq_vst] stop at ppq %.3f | clock: %ld pulses, %ld caught up, %ld overlapped, %ld jumps"
+            " | no timeinfo %ld | control cc %ld seen, %ld used\n",
+            w->last_ppq, w->clk.pulses, w->clk.gaps, w->clk.dups, w->clk.jumps, w->no_ti, w->ctl.seen, w->ctl.used);
+        w->no_ti = w->ctl.seen = w->ctl.used = 0;
     }
     w->was_playing = playing;
 
@@ -346,11 +383,52 @@ static void feed_transport(Plugin *w, int32_t frames) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Control by MIDI CC (map in the header). Audio thread: from the Control In port (ctl_poll) and for
+ * CCs the host hands to the plugin (effProcessEvents).
+ * ------------------------------------------------------------------------- */
+static bool cc_to_key(int cc, char *key, size_t max) {
+    static const char *const LINE[5] = {"corrupt", "cv_range", "length", "adv", "regen"};
+    static const char *const TIME[7] = {"trig_mix", "note_rate", "note_length", "transpose", "scale", "key", "g_reset"};
+    static const char *const LFO[13] = {"shape", "rate", "sync", "div", "retrig", "corrupt1", "range1", "length1",
+                                        "trigmix", "corrupt2", "range2", "length2", "notelen"};
+    for (int l = 0; l < 2; l++) {
+        int base = 10 + 20 * l;
+        if (cc >= base && cc <= base + 4) { std::snprintf(key, max, "s%d_%s", l + 1, LINE[cc - base]); return true; }
+        if (cc >= base + 10 && cc <= base + 17) { std::snprintf(key, max, "s%d_step%d", l + 1, cc - base - 10); return true; }
+        int lb = 60 + 20 * l;
+        if (cc >= lb && cc <= lb + 12) { std::snprintf(key, max, "lfo%d_%s", l + 1, LFO[cc - lb]); return true; }
+    }
+    if (cc >= 50 && cc <= 56) { std::snprintf(key, max, "%s", TIME[cc - 50]); return true; }
+    return false;
+}
+static void apply_cc(Plugin *w, int ch, int cc, int val) {
+    if (w->cc_idx < 0) return;
+    int sel = (int)std::lround(w->cache[w->cc_idx]);   /* 0 = OFF, 1..16 */
+    if (sel == 0 || ch != sel - 1) return;
+    char key[24];
+    if (!cc_to_key(cc, key, sizeof key)) return;
+    int i = -1;
+    for (int k = 0; k < NPARAMS; k++) if (!std::strcmp(PARAMS[k].key, key)) { i = k; break; }
+    if (i < 0) return;
+    const param_t *p = &PARAMS[i];
+    if (val < 0) val = 0;
+    if (val > 127) val = 127;
+    w->ctl.used++;
+    if (p->momentary) { if (val >= 64) core_set(w, p->key, "1"); return; }
+    float n = val / 127.0f;
+    apply(w, i, from_norm(p, n));
+    int sq, st;
+    if (!is_step(p, &sq, &st))   /* step LEDs are pushed to the host by processReplacing when the bits change */
+        w->master(&w->fx, audioMasterAutomate, i, 0, 0, to_norm(p, w->cache[i]));
+}
+static void ctl_cc(void *user, int ch, int cc, int val) { apply_cc((Plugin *)user, ch, cc, val); }
+
+/* ---------------------------------------------------------------------------
  * VST callbacks
  * ------------------------------------------------------------------------- */
 static void processReplacing(AEffect *e, float **in, float **out, int32_t n) {
-    (void)in;
     Plugin *w = (Plugin *)e->object;
+    ctl_poll(w->seq, &w->ctl, ctl_cc, w);   /* CCs from hardware controllers */
     feed_transport(w, n);
     for (int n2 = 0; n2 < 2; n2++) {
         /* The host does not re-read a toggle or ring by itself, so push what changed on its own (jv880's highlight
@@ -372,7 +450,16 @@ static void processReplacing(AEffect *e, float **in, float **out, int32_t n) {
     }
     for (int i = 0; i < NPARAMS; i++)
         if (w->release[i]) { w->release[i] = 0; w->held[i] = false; w->master(&w->fx, audioMasterAutomate, i, 0, 0, 0.0f); }
+#ifdef PLUG_EFFECT
+    /* insert effect: the track's audio goes through untouched (the host may hand us in == out) */
+    for (int ch = 0; ch < 2; ch++) {
+        if (in && in[ch]) { if (out[ch] != in[ch]) std::memmove(out[ch], in[ch], (size_t)n * sizeof(float)); }
+        else std::memset(out[ch], 0, (size_t)n * sizeof(float));
+    }
+#else
+    (void)in;
     for (int32_t i = 0; i < n; i++) out[0][i] = out[1][i] = 0.0f;   /* MIDI generator: no audio */
+#endif
 }
 
 static void setParameter(AEffect *e, int32_t i, float n) {
@@ -430,7 +517,11 @@ static intptr_t dispatcher(AEffect *e, int32_t op, int32_t idx, intptr_t v, void
           alsa_close(w); }
         delete w;
         return 1;
+#ifdef PLUG_EFFECT
+    case effGetPlugCategory: return 1; /* kPlugCategEffect */
+#else
     case effGetPlugCategory: return 2; /* kPlugCategSynth */
+#endif
     case effGetEffectName:
     case effGetProductString: copy_str(p, PLUG_NAME, 32); return 1;
     case effGetVendorString: copy_str(p, PLUG_VENDOR, 32); return 1;
@@ -459,9 +550,18 @@ static intptr_t dispatcher(AEffect *e, int32_t op, int32_t idx, intptr_t v, void
         return 1;
     }
     case effSetSampleRate: case effSetBlockSize: case effMainsChanged: return 1;
-    case effProcessEvents: return 1;   /* the sequencer takes no MIDI input (the core ignores notes) */
+    case effProcessEvents: {   /* no notes in (the core ignores them); CCs on the control channel set parameters */
+        VstEvents *ev = (VstEvents *)p;
+        for (int i = 0; ev && i < ev->numEvents; i++) {
+            if (ev->events[i]->type != 1) continue;
+            VstMidiEvent *m = (VstMidiEvent *)ev->events[i];
+            if ((m->midiData[0] & 0xF0) == 0xB0) apply_cc(w, m->midiData[0] & 0x0F, m->midiData[1], m->midiData[2]);
+        }
+        return 1;
+    }
     case effCanDo:
-        return (!std::strcmp((char *)p, "receiveVstTimeInfo")) ? 1 : -1;
+        return (!std::strcmp((char *)p, "receiveVstTimeInfo") || !std::strcmp((char *)p, "receiveVstEvents") ||
+                !std::strcmp((char *)p, "receiveVstMidiEvent")) ? 1 : -1;
     case effGetChunk: {
         std::string s;
         for (int i = 0; i < NPARAMS; i++) {
@@ -515,7 +615,8 @@ extern "C" __attribute__((visibility("default"))) AEffect *VSTPluginMain(audioMa
     reset_defaults(w);
     for (int n2 = 0; n2 < 2; n2++) for (int i = 0; i < 8; i++) { w->step_idx[n2][i] = -1; w->last_bits[n2][i] = -1; }
     for (int i = 0; i < NPARAMS; i++) { int sq, st; if (is_step(&PARAMS[i], &sq, &st)) w->step_idx[sq][st] = i; }
-    for (int i = 0; i < NPARAMS; i++) { if (!std::strcmp(PARAMS[i].key, "s1_run")) w->run_idx[0] = i; if (!std::strcmp(PARAMS[i].key, "s2_run")) w->run_idx[1] = i; }
+    for (int i = 0; i < NPARAMS; i++) { if (!std::strcmp(PARAMS[i].key, "s1_run")) w->run_idx[0] = i; if (!std::strcmp(PARAMS[i].key, "s2_run")) w->run_idx[1] = i;
+                                       if (!std::strcmp(PARAMS[i].key, "cc_ch")) w->cc_idx = i; }
     alsa_open(w);
 
     AEffect *e = &w->fx;
@@ -526,12 +627,18 @@ extern "C" __attribute__((visibility("default"))) AEffect *VSTPluginMain(audioMa
     e->getParameter = getParameter;
     e->processReplacing = processReplacing;
     e->numParams = NPARAMS;
+#ifdef PLUG_EFFECT
+    e->numInputs = 2;
+    e->numOutputs = 2;
+    e->flags = effFlagsCanReplacing | effFlagsProgramChunks;
+#else
     e->numInputs = 0;
     e->numOutputs = 2;
     e->flags = effFlagsCanReplacing | effFlagsIsSynth | effFlagsProgramChunks;
+#endif
     e->uniqueID = PLUG_UID;
     e->version = PLUG_VERSION;
     e->object = w;
-    LOG("[maze_seq_vst] up (" BUILD_ID "), %d params\n", NPARAMS);
+    LOG("[maze_seq_vst] " PLUG_NAME " up (" BUILD_ID ", " PLUG_MODE "), %d params\n", NPARAMS);
     return e;
 }

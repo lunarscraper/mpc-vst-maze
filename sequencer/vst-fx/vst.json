@@ -1,0 +1,12 @@
+{
+  "name": "Maze Sequencer FX",
+  "vendor": "sd88me",
+  "uid": "MzSx",
+  "version": 1000,
+  "so": "maze_seq_fx.so",
+  "effect": true,
+  "params": "params.json",
+  "layout": "layout.conf",
+  "art": "html",
+  "_comment": "Insert-effect variant of ../vst (same maze_seq_vst.cpp, parameters and skin): 'effect' makes gen_vst.py emit PLUG_EFFECT in params.h and a category=Effect plugin-list entry, so the sequencer loads as an insert and takes none of the 8 plugin instrument slots. Audio passes through untouched; notes go out the plugin's own ALSA port 'Maze Sequencer FX'. build.sh copies params.json, layout.conf, skin.css and images/ here from ../vst (not committed)."
+}

@@ -271,3 +271,32 @@ way as Maze Voice, using `Maze-Sequencer-<version>-mpc-armv7.zip`.
 ## License
 
 MIT. See [LICENSE](LICENSE). Copyright © sd88me.
+
+## Maze Sequencer FX und Steuerung per MIDI-CC
+
+| | Ordner | Datei | Typ | Workflow | ALSA-MIDI-Port |
+|---|---|---|---|---|---|
+| Maze Sequencer | `sequencer/vst/` | `maze_seq.so` | Instrument (belegt einen der 8 Plugin-Slots) | VST release - Maze Sequencer (draft) | `Maze Sequencer` |
+| Maze Sequencer FX | `sequencer/vst-fx/` | `maze_seq_fx.so` | Insert-Effekt (belegt keinen Instrumenten-Slot) | VST release - Maze Sequencer FX (draft) | `Maze Sequencer FX` |
+
+Beide entstehen aus derselben `sequencer/vst/maze_seq_vst.cpp`; `sequencer/vst-fx/vst.json` setzt nur
+`"effect": true`. Die FX-Variante reicht das Audio des Tracks unverändert durch und sendet ihre Noten
+über den eigenen MIDI-Port. Als Insert auf den Track des gesteuerten Instruments (oder auf den Master)
+legen und beim Ziel-Track als MIDI-Eingang `Maze Sequencer FX` wählen.
+
+**MIDI-CC.** Das Plugin hat einen zweiten MIDI-Port „Control In" und verbindet ihn selbst mit allen
+Hardware-MIDI-Eingängen. Es reagiert nur auf CCs des Kanals, der auf der neuen Seite SETUP unter
+CONTROL CH eingestellt ist (OFF, 1–16; Voreinstellung 14; wird mit dem Projekt gespeichert).
+
+| Bereich | CCs |
+|---|---|
+| Linie A | 10 Corrupt, 11 CV Range, 12 Length, 13 Advance (ab 64), 14 Reset (ab 64), 20–27 Steps 1–8 (ab 64 an) |
+| Linie B | 30 Corrupt, 31 CV Range, 32 Length, 33 Advance, 34 Reset, 40–47 Steps 1–8 |
+| Timing / Scale | 50 Trig Mix, 51 Note Rate, 52 Note Length, 53 Transpose, 54 Scale, 55 Key, 56 Reset Bars |
+| LFO 1 | 60 Shape, 61 Rate, 62 Sync, 63 Sync Div, 64 Retrig, 65 A Corrupt, 66 A Range, 67 A Length, 68 Trig Mix, 69 B Corrupt, 70 B Range, 71 B Length, 72 Note Len |
+| LFO 2 | wie LFO 1 plus 20 (CC 80–92) |
+
+**Q-Links.** Auf den Knöpfen liegen nur Regler und Auswahlfelder. Step-LEDs, ADVANCE, RESET, SYNC und
+RETRIG werden auf dem Touchscreen getippt.
+
+Diagnose: `/tmp/maze_seq_vst.log` schreibt bei jedem Stop eine Zeile mit `control cc N seen, M used`.
