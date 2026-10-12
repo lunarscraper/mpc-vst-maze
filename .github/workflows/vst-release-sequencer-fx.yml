@@ -1,0 +1,34 @@
+# Build Maze Sequencer FX (the insert-effect variant, sequencer/vst-fx/) into a DRAFT release
+# (maze-sequencer-fx-vst-v<version>): Actions -> "VST release - Maze Sequencer FX (draft)" -> Run workflow.
+# dry_run builds the zip and skin previews as run artifacts only. Same pinned mpc-vst-plugins commit
+# as vst-release-sequencer.yml.
+name: VST release - Maze Sequencer FX (draft)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version, e.g. 1.0.0
+        required: true
+        default: 1.0.0
+      dry_run:
+        description: Build only (zip + skin previews as run artifacts), no draft release
+        type: boolean
+        default: true
+
+jobs:
+  maze-sequencer-fx:
+    uses: sd88me/mpc-vst-plugins/.github/workflows/vst-release.yml@a4b8f861d07153a2b387d7520331f532f7247502
+    permissions:
+      contents: write
+    with:
+      tag: maze-sequencer-fx-vst-v${{ inputs.version }}
+      version: ${{ inputs.version }}
+      tools_ref: a4b8f861d07153a2b387d7520331f532f7247502
+      vst_dir: sequencer/vst-fx
+      plugin_id: maze-sequencer-fx
+      license: MIT
+      build: SHADOW_SKIN_MPC_OS=2 bash sequencer/vst-fx/build.sh
+      host_test: bash sequencer/vst-fx/test.sh
+      about: Dual 8-step generative sequencer (Moog Labyrinth style) as an insert effect - drives other tracks over MIDI without using a plugin instrument slot.
+      dry_run: ${{ inputs.dry_run }}
